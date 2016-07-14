@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Class-Path: D:\EPAM\SummerPractice\picardmy\picard\src\main\java\picar
+ d\cmdline\PicardCommandLine.java
+Main-Class: picard.cmdline.PicardCommandLine
+

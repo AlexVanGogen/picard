@@ -24,15 +24,17 @@
 
 package picard.analysis;
 
+import com.google.common.util.concurrent.FutureFallback;
 import htsjdk.samtools.util.Histogram;
 import htsjdk.samtools.util.Log;
 import picard.PicardException;
 import picard.util.MathUtil;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Random;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Created by David Benjamin on 5/13/15.
@@ -95,6 +97,16 @@ public class TheoreticalSensitivity {
     }
 
     //given L lists of lists and N thresholds, count the proportion of each list above each threshold
+
+    /**
+     * Массив lists[i] представляет собой что-то вроде случайной выборки.
+     * Нам известно, что lists[a][i] <= lists[b][i] для любого i и для любых a и b: a < b.
+     * Проходим по первому индексу, в newRow[i] записываем вероятность того, что в случайной выборке
+     * ровно j элементов больше i-го значения порога.
+     * @param lists
+     * @param thresholds
+     * @return
+     */
     public static List<ArrayList<Double>> proportionsAboveThresholds(final List<ArrayList<Integer>> lists, final List<Double> thresholds) {
         final ArrayList<ArrayList<Double>> result = new ArrayList<>();
 
@@ -172,21 +184,101 @@ public class TheoreticalSensitivity {
             }
         }
 
+        /**
+         * Что нужно сделать?
+         * 1 поток все время читает, несколько потоков обрабатывают
+         */
+        private final int SAMPLES_PER_TASK = 1000;
+        private final int MAX_THREADS = 8;
         //get samples of sums of 0, 1, 2,. . .  N - 1 draws
+//        public List<ArrayList<Integer>> sampleCumulativeSums(final int maxNumberOfSummands, final int sampleSize, final boolean withLogging) {
+//            long start = System.nanoTime();
+//            final List<Integer[]> result = new ArrayList<>();
+//            for (int m = 0; m < maxNumberOfSummands; m++) { result.add(new Integer[sampleSize]); }
+//            //int leftBound  = 0;  // rightBound = min(leftBound + SAMPLES_PER_TASK, sampleSize);
+//            ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
+//            List<Future<List<Integer[]>>> results = new ArrayList<>();
+//            for (int leftBound = 0; leftBound < sampleSize; leftBound += SAMPLES_PER_TASK) {
+//                final int tmpLeftBound = leftBound, tmpRightBound = Math.min(leftBound + SAMPLES_PER_TASK, sampleSize);
+//                //leftBound = tmpRightBound;
+//                Future<List<Integer[]>> nextTaskResult =
+//                        es.submit(() -> {
+//                    List<Integer[]> res = new ArrayList<>();
+//                    for (int m = 0; m < maxNumberOfSummands; m++) { res.add(new Integer[sampleSize]); }
+//                    long st = System.nanoTime();
+//                    for (int iteration = tmpLeftBound; iteration < tmpRightBound; iteration++) {
+//                        int cumulativeSum = 0;
+//                        for (int m = 0; m < maxNumberOfSummands; m++) {
+//                            res.get(m)[iteration] = cumulativeSum;
+//                            cumulativeSum += draw();
+//                        }
+//                        if (withLogging && (iteration+1) % SAMPLES_PER_TASK == 0) {
+//                            log.info((iteration + 1) + " sampling iterations completed");
+//                        }
+//                    }
+//                    System.out.println("===> Time: " + (System.nanoTime() - st));
+//                    return res;
+//                });
+//                results.add(nextTaskResult);
+//            }
+//
+//            es.shutdown();
+//            try {
+//                es.awaitTermination(1, TimeUnit.DAYS);
+//            } catch (InterruptedException e) {
+//                e.printStackTrace();
+//            }
+//            System.out.println(results.size());
+//            for (Future<List<Integer[]>> res : results) {
+//                try {
+//                    List<Integer[]> sample = res.get();
+//                    for (int i = 0; i < maxNumberOfSummands; i++) {
+//                        Integer[] valuesOfSummand = sample.get(i);
+//                        result.set(i, Arrays.copyOf(valuesOfSummand, valuesOfSummand.length));
+//                    }
+//                } catch (InterruptedException e) {
+//                    e.printStackTrace();
+//                } catch (ExecutionException e) {
+//                    e.printStackTrace();
+//                }
+//            }
+//            long stop = System.nanoTime();
+//            System.out.println("Time elapsed for cumulativeSums: " + (stop - start) + " ns.");
+////            File file = new File("D:\\\\EPAM\\SummerPractice\\picardmy\\lol.txt");
+////            try {
+////                FileWriter fileWriter = new FileWriter(file);
+////                for (int i = 0; i < maxNumberOfSummands; i++) {
+////                    for (int j = 0; j < sampleSize; j++)
+////                        if (result.get(i)[j] == null)
+////                            fileWriter.write((i*maxNumberOfSummands+j) + " ");
+////                    System.out.println();
+////                }
+////            } catch (IOException e) {
+////                e.printStackTrace();
+////            }
+//
+//            List<ArrayList<Integer>> res = new ArrayList<>();
+//            for (int i = 0; i < maxNumberOfSummands; i++)
+//                res.add(new ArrayList<>(Arrays.asList(result.get(i))));
+//            return res;
+//        }
         public List<ArrayList<Integer>> sampleCumulativeSums(final int maxNumberOfSummands, final int sampleSize, final boolean withLogging) {
+            long start = System.nanoTime();
             final List<ArrayList<Integer>> result = new ArrayList<>();
-            for (int m = 0; m < maxNumberOfSummands; m++) result.add(new ArrayList<>());
+            for (int m = 0; m < maxNumberOfSummands; m++) result.add(new ArrayList<>(sampleSize));
 
             for (int iteration = 0; iteration < sampleSize; iteration++) {
                 int cumulativeSum = 0;
                 for (int m = 0; m < maxNumberOfSummands; m++) {
-                    result.get(m).add(cumulativeSum);
+                    result.get(m).add(iteration, cumulativeSum);
                     cumulativeSum += draw();
                 }
-                if (withLogging && iteration % 1000 == 0) {
+                if (withLogging && iteration % SAMPLES_PER_TASK == 0) {
                     log.info(iteration + " sampling iterations completed");
                 }
             }
+            long stop = System.nanoTime();
+            System.out.println("Time elapsed for cumulativeSums: " + (stop - start) + " ns.");
             return result;
         }
     }
