@@ -55,6 +55,11 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
 
 /**
@@ -242,15 +247,21 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         iterator.setIncludeNonPfReads(false);
         iterator.setMaxReadsToAccumulatePerLocus(LOCUS_ACCUMULATION_CAP);
 
-        final WgsMetricsCollector collector = getCollector(COVERAGE_CAP);
+        WgsMetricsCollector collector = getCollector(COVERAGE_CAP);
 
         final boolean usingStopAfter = STOP_AFTER > 0;
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
 
+        final int MAX_THREADS = 8;
+        final long LOCI_PER_TASK = 1_000_000_000;
+        int iter = 0;
         // Loop through all the loci
+        ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
+        final List<MetricsFile<WgsMetrics, Integer>> outputFiles = new ArrayList<>();
         while (iterator.hasNext()) {
-            System.out.println("=========> next loci");
+
+            ++iter;
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
@@ -264,12 +275,35 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             // Record progress and perhaps stop
             progress.record(info.getSequenceName(), info.getPosition());
             if (usingStopAfter && ++counter > stopAfter) break;
+
+            if (iter < LOCI_PER_TASK) continue;
+            iter = 0;
+            System.out.println("BREEEEEEEEEEEEEEEEEAK!");
+            final WgsMetricsCollector tmpCollector = collector;
+            collector = getCollector(COVERAGE_CAP);
+            es.submit(() -> {
+                final MetricsFile<WgsMetrics, Integer> outs = getMetricsFile();
+                tmpCollector.addToMetricsFile(outs, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
+
+                outputFiles.add(outs);
+            });
+
         }
 
+        es.shutdown();
+        try {
+            es.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
-        final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
-        collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
-        out.write(OUTPUT);
+        final MetricsFile<WgsMetrics, Integer> outs = getMetricsFile();
+        collector.addToMetricsFile(outs, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
+        outputFiles.add(outs);
+
+        int fileNumber = 1;
+        for (MetricsFile<WgsMetrics, Integer> outFile: outputFiles)
+            outFile.write(new File(OUTPUT.getPath() + (fileNumber++) + ".txt"));
 
         return 0;
     }
