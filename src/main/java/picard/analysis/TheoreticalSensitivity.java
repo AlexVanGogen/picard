@@ -35,6 +35,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Created by David Benjamin on 5/13/15.
@@ -102,7 +103,8 @@ public class TheoreticalSensitivity {
      * Массив lists[i] представляет собой что-то вроде случайной выборки.
      * Нам известно, что lists[a][i] <= lists[b][i] для любого i и для любых a и b: a < b.
      * Проходим по первому индексу, в newRow[i] записываем вероятность того, что в случайной выборке
-     * ровно j элементов больше i-го значения порога.
+     * ровно j элементов меньше i-го значения порога.
+     *
      * @param lists
      * @param thresholds
      * @return
@@ -151,13 +153,12 @@ public class TheoreticalSensitivity {
     public static class RouletteWheel {
         final private List<Double> probabilities;
         final private int N;
-        private int count = 0;
+        private LongAdder count = new LongAdder();
         private Random rng;
 
         RouletteWheel(final double[] weights) {
             rng = new Random(51);
             N = weights.length;
-
             probabilities = new ArrayList<>();
             final double wMax = MathUtil.max(weights);
 
@@ -173,12 +174,12 @@ public class TheoreticalSensitivity {
         public int draw() {
             while (true) {
                 final int n = (int) (N * rng.nextDouble());
-                count++;
+                count.increment();
                 if (rng.nextDouble() < probabilities.get(n)) {
-                    count = 0;
+                    count.reset();
                     return n;
-                } else if (count >= SAMPLING_MAX) {
-                    count = 0;
+                } else if (count.intValue() >= SAMPLING_MAX) {
+                    count.reset();
                     return 0;
                 }
             }
@@ -201,11 +202,11 @@ public class TheoreticalSensitivity {
             for (int leftBound = 0; leftBound < sampleSize; leftBound += SAMPLES_PER_TASK) {
                 final int tmpLeftBound = leftBound, tmpRightBound = Math.min(leftBound + SAMPLES_PER_TASK, sampleSize);
                 //leftBound = tmpRightBound;
-                Future<List<Integer[]>> nextTaskResult =
-                        es.submit(() -> {
+                Future<List<Integer[]>> nextTaskResult = es.submit(() -> {
+                    log.info("Start task");
                     List<Integer[]> res = new ArrayList<>();
                     for (int m = 0; m < maxNumberOfSummands; m++) { res.add(new Integer[sampleSize]); }
-                    long st = System.nanoTime();
+//                    long st = System.nanoTime();
                     for (int iteration = tmpLeftBound; iteration < tmpRightBound; iteration++) {
                         int cumulativeSum = 0;
                         for (int m = 0; m < maxNumberOfSummands; m++) {
@@ -216,7 +217,7 @@ public class TheoreticalSensitivity {
                             log.info((iteration + 1) + " sampling iterations completed");
                         }
                     }
-                    System.out.println("===> Time: " + (System.nanoTime() - st));
+//                    System.out.println("===> Time: " + (System.nanoTime() - st));
                     return res;
                 });
                 results.add(nextTaskResult);
