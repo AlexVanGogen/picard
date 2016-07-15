@@ -250,6 +250,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
         // Loop through all the loci
         while (iterator.hasNext()) {
+            System.out.println("=========> next loci");
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
