@@ -52,12 +52,12 @@ import picard.filter.CountingPairedFilter;
 import picard.util.MathUtil;
 
 import java.io.File;
+import java.security.interfaces.RSAKey;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.Objects;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
@@ -247,47 +247,74 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         iterator.setIncludeNonPfReads(false);
         iterator.setMaxReadsToAccumulatePerLocus(LOCUS_ACCUMULATION_CAP);
 
-        WgsMetricsCollector collector = getCollector(COVERAGE_CAP);
+        final WgsMetricsCollector collector = getCollector(COVERAGE_CAP);
 
         final boolean usingStopAfter = STOP_AFTER > 0;
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
 
         final int MAX_THREADS = 8;
-        final long LOCI_PER_TASK = 1_000_000_000;
-        int iter = 0;
+        final long LOCI_PER_TASK = 100;
+        final int QUEUE_CAPACITY = 1;
+        final int MAX_ACQUIRES = 6;
         // Loop through all the loci
         ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
-        final List<MetricsFile<WgsMetrics, Integer>> outputFiles = new ArrayList<>();
-        while (iterator.hasNext()) {
+        final BlockingQueue<List<Object[]>> queue = new LinkedBlockingQueue<List<Object[]>>(
+                QUEUE_CAPACITY);
+        final Semaphore sem = new Semaphore(MAX_ACQUIRES);
+        List<Object[]> pairs = new ArrayList<>();
+//        final List<MetricsFile<WgsMetrics, Integer>> outputFiles = new ArrayList<>();
 
-            ++iter;
+        es.execute(() -> {
+            while (true) {
+                try {
+                    System.out.println("LALALA");
+                    final List<Object[]> tmpPairs = queue.take();
+                    sem.acquire();
+
+                    es.submit(() -> {
+                        for (Object[] objects: tmpPairs) {
+                           SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) objects[0];
+                           ReferenceSequence ref = (ReferenceSequence) objects[1];
+                           collector.addInfo(info, ref);
+                           progress.record(info.getSequenceName(), info.getPosition());
+                        }
+                        System.out.println("Obrabotano");
+                    });
+
+                    sem.release();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+
+            }
+        });
+
+        int pairsCount = 0;
+
+        while (iterator.hasNext()) {
+            //System.out.println(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory());
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
-            // Check that the reference is not N
+            pairs.add(new Object[] {info, ref});
+
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
 
-            // add to the collector
-            collector.addInfo(info, ref);
+            if (pairs.size() < LOCI_PER_TASK) {
+                if (usingStopAfter && ++counter > stopAfter) break;
+                continue;
+            }
 
-            // Record progress and perhaps stop
-            progress.record(info.getSequenceName(), info.getPosition());
-            if (usingStopAfter && ++counter > stopAfter) break;
 
-            if (iter < LOCI_PER_TASK) continue;
-            iter = 0;
-            System.out.println("BREEEEEEEEEEEEEEEEEAK!");
-            final WgsMetricsCollector tmpCollector = collector;
-            collector = getCollector(COVERAGE_CAP);
-            es.submit(() -> {
-                final MetricsFile<WgsMetrics, Integer> outs = getMetricsFile();
-                tmpCollector.addToMetricsFile(outs, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
+            try {
+                queue.put(pairs);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
 
-                outputFiles.add(outs);
-            });
-
+            pairs = new ArrayList<>();
         }
 
         es.shutdown();
@@ -297,16 +324,13 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             e.printStackTrace();
         }
 
-        final MetricsFile<WgsMetrics, Integer> outs = getMetricsFile();
-        collector.addToMetricsFile(outs, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
-        outputFiles.add(outs);
-
-        int fileNumber = 1;
-        for (MetricsFile<WgsMetrics, Integer> outFile: outputFiles)
-            outFile.write(new File(OUTPUT.getPath() + (fileNumber++) + ".txt"));
+        final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
+        collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
+        out.write(OUTPUT);
 
         return 0;
     }
+
 
     protected SAMFileHeader getSamFileHeader() {
         return this.header;
@@ -397,6 +421,24 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             // add them to the file
             file.addMetric(metrics);
             file.addHistogram(depthHistogram);
+        }
+
+        protected WgsMetrics addMetrics(final CountingFilter dupeFilter,
+                                        final CountingFilter mapqFilter,
+                                        final CountingPairedFilter pairFilter) {
+            final Histogram<Integer> depthHistogram = getDepthHistogram();
+            return getMetrics(depthHistogram, dupeFilter, mapqFilter, pairFilter);
+        }
+
+        protected void calculateMetrics(List<WgsMetrics> metrics) {
+            long lociCount = 0;
+            double sum = 0.0;
+            for (WgsMetrics metric: metrics) {
+                long genomeTerritory = metric.GENOME_TERRITORY;
+                lociCount += genomeTerritory;
+                sum += metric.MEAN_COVERAGE*genomeTerritory;
+            }
+            System.out.println("GENOME_TERRITORY = " + lociCount + "\nMEAN_COVERAGE = " + (sum/lociCount));
         }
 
         protected Histogram<Integer> getDepthHistogram() {
