@@ -58,6 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
@@ -252,37 +253,39 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         final boolean usingStopAfter = STOP_AFTER > 0;
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
+        final AtomicBoolean reading = new AtomicBoolean(true);
 
-        final int MAX_THREADS = 8;
-        final long LOCI_PER_TASK = 100;
-        final int QUEUE_CAPACITY = 1;
+        final int MAX_THREADS = 3;
+        final int LOCI_PER_TASK = 25;
+        final int QUEUE_CAPACITY = 10;
         final int MAX_ACQUIRES = 6;
         // Loop through all the loci
         ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
         final BlockingQueue<List<Object[]>> queue = new LinkedBlockingQueue<List<Object[]>>(
                 QUEUE_CAPACITY);
         final Semaphore sem = new Semaphore(MAX_ACQUIRES);
-        List<Object[]> pairs = new ArrayList<>();
+        List<Object[]> pairs = new ArrayList<>(LOCI_PER_TASK);
 //        final List<MetricsFile<WgsMetrics, Integer>> outputFiles = new ArrayList<>();
 
         es.execute(() -> {
             while (true) {
                 try {
-                    System.out.println("LALALA");
+                    //System.out.println("LALALA");
                     final List<Object[]> tmpPairs = queue.take();
+                    if (tmpPairs.size() == 0) break;
                     sem.acquire();
 
                     es.submit(() -> {
                         for (Object[] objects: tmpPairs) {
-                           SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) objects[0];
-                           ReferenceSequence ref = (ReferenceSequence) objects[1];
-                           collector.addInfo(info, ref);
-                           progress.record(info.getSequenceName(), info.getPosition());
+                            SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) objects[0];
+                            ReferenceSequence ref = (ReferenceSequence) objects[1];
+                            collector.addInfo(info, ref);
+                            progress.record(info.getSequenceName(), info.getPosition());
                         }
-                        System.out.println("Obrabotano");
+                        sem.release();
+                        //System.out.println("Obrabotano");
                     });
 
-                    sem.release();
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -297,13 +300,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
-            pairs.add(new Object[] {info, ref});
+
 
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
 
+            pairs.add(new Object[] {info, ref});
+
             if (pairs.size() < LOCI_PER_TASK) {
-                if (usingStopAfter && ++counter > stopAfter) break;
                 continue;
             }
 
@@ -314,22 +318,101 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                 e.printStackTrace();
             }
 
-            pairs = new ArrayList<>();
+            pairs = new ArrayList<>(LOCI_PER_TASK);
+
+            if (usingStopAfter && ++counter > stopAfter) break;
+        }
+        try {
+            queue.put(new ArrayList<>());
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
 
+        System.out.println("SHUTDOWN START " + Thread.currentThread());
         es.shutdown();
+        System.out.println("SHUTDOWN FINISH " + Thread.currentThread());
         try {
             es.awaitTermination(1, TimeUnit.DAYS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-
+        System.out.println("AWAITTERMINATION FINISH " + Thread.currentThread());
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
 
         return 0;
     }
+
+//    protected int doWork() {
+//        IOUtil.assertFileIsReadable(INPUT);
+//        IOUtil.assertFileIsWritable(OUTPUT);
+//        IOUtil.assertFileIsReadable(REFERENCE_SEQUENCE);
+//        if (INTERVALS != null) {
+//            IOUtil.assertFileIsReadable(INTERVALS);
+//        }
+//
+//        // it doesn't make sense for the locus accumulation cap to be lower than the coverage cap
+//        if (LOCUS_ACCUMULATION_CAP < COVERAGE_CAP) {
+//            log.warn("Setting the LOCUS_ACCUMULATION_CAP to be equal to the COVERAGE_CAP (" + COVERAGE_CAP + ") because it should not be lower");
+//            LOCUS_ACCUMULATION_CAP = COVERAGE_CAP;
+//        }
+//
+//        // Setup all the inputs
+//        final ProgressLogger progress = new ProgressLogger(log, 10000000, "Processed", "loci");
+//        final ReferenceSequenceFileWalker refWalker = new ReferenceSequenceFileWalker(REFERENCE_SEQUENCE);
+//        final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(INPUT);
+//        final SamLocusIterator iterator = getLocusIterator(in);
+//        this.header = in.getFileHeader();
+//
+//        final List<SamRecordFilter> filters = new ArrayList<>();
+//        final CountingFilter dupeFilter = new CountingDuplicateFilter();
+//        final CountingFilter mapqFilter = new CountingMapQFilter(MINIMUM_MAPPING_QUALITY);
+//        final CountingPairedFilter pairFilter = new CountingPairedFilter();
+//        // The order in which filters are added matters!
+//        filters.add(new SecondaryAlignmentFilter()); // Not a counting filter because we never want to count reads twice
+//        filters.add(mapqFilter);
+//        filters.add(dupeFilter);
+//        if (!COUNT_UNPAIRED) {
+//            filters.add(pairFilter);
+//        }
+//        iterator.setSamFilters(filters);
+//        iterator.setEmitUncoveredLoci(true);
+//        iterator.setMappingQualityScoreCutoff(0); // Handled separately because we want to count bases
+//        iterator.setQualityScoreCutoff(0);        // Handled separately because we want to count bases
+//        iterator.setIncludeNonPfReads(false);
+//        iterator.setMaxReadsToAccumulatePerLocus(LOCUS_ACCUMULATION_CAP);
+//
+//        final WgsMetricsCollector collector = getCollector(COVERAGE_CAP);
+//
+//        final boolean usingStopAfter = STOP_AFTER > 0;
+//        final long stopAfter = STOP_AFTER - 1;
+//        long counter = 0;
+//
+//        // Loop through all the loci
+//        while (iterator.hasNext()) {
+//            final SamLocusIterator.LocusInfo info = iterator.next();
+//            final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
+//
+//            // Check that the reference is not N
+//            final byte base = ref.getBases()[info.getPosition() - 1];
+//            if (SequenceUtil.isNoCall(base)) continue;
+//
+//            // add to the collector
+//            collector.addInfo(info, ref);
+//
+//            // Record progress and perhaps stop
+//            progress.record(info.getSequenceName(), info.getPosition());
+//            if (usingStopAfter && ++counter > stopAfter) break;
+//        }
+//
+//
+//        final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
+//        collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
+//        out.write(OUTPUT);
+//
+//        return 0;
+//    }
 
 
     protected SAMFileHeader getSamFileHeader() {
