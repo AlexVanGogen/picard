@@ -373,9 +373,9 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         private   final AtomicLongArray atomicBaseQHistogramArray;
         protected final long[] depthHistogramArray;
 
-        private AtomicLong basesExcludedByBaseq = new AtomicLong(0);
-        private AtomicLong basesExcludedByOverlap = new AtomicLong(0);
-        private AtomicLong basesExcludedByCapping = new AtomicLong(0);
+        private LongAdder basesExcludedByBaseq = new LongAdder();
+        private LongAdder basesExcludedByOverlap = new LongAdder();
+        private LongAdder basesExcludedByCapping = new LongAdder();
         protected final int coverageCap;
         public WgsMetricsCollector(final int coverageCap) {
             atomicDepthHistogramArray = new AtomicLongArray(coverageCap + 1);
@@ -392,11 +392,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             for (SamLocusIterator.RecordAndOffset recs : info.getRecordAndPositions()) {
                 if (recs.getBaseQuality() < MINIMUM_BASE_QUALITY ||
                         SequenceUtil.isNoCall(recs.getReadBase())) {
-                    basesExcludedByBaseq.incrementAndGet();
+                    basesExcludedByBaseq.increment();
                     continue;
                 }
                 if (!readNames.add(recs.getRecord().getReadName())) {
-                    basesExcludedByOverlap.incrementAndGet();
+                    basesExcludedByOverlap.increment();
                     continue;
                 }
 
@@ -408,7 +408,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
 
             final int depth = Math.min(pileupSize, coverageCap);
-            if (depth < pileupSize) basesExcludedByCapping.addAndGet(pileupSize - coverageCap);
+            if (depth < pileupSize) basesExcludedByCapping.add(pileupSize - coverageCap);
             atomicDepthHistogramArray.incrementAndGet(depth);
         }
 
@@ -482,15 +482,15 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                 final long basesExcludedByMapq    = getBasesExcludedBy(mapqFilter);
                 final long basesExcludedByPairing = getBasesExcludedBy(pairFilter);
                 final double total                = depthHistogram.getSum();
-                final double totalWithExcludes    = total + basesExcludedByDupes + basesExcludedByMapq + basesExcludedByPairing + basesExcludedByBaseq.get() + basesExcludedByOverlap.get() + basesExcludedByCapping.get();
+                final double totalWithExcludes    = total + basesExcludedByDupes + basesExcludedByMapq + basesExcludedByPairing + basesExcludedByBaseq.longValue() + basesExcludedByOverlap.longValue() + basesExcludedByCapping.longValue();
 
             //executorService.submit(() -> {
                 metrics.PCT_EXC_DUPE = basesExcludedByDupes / totalWithExcludes;
                 metrics.PCT_EXC_MAPQ = basesExcludedByMapq / totalWithExcludes;
                 metrics.PCT_EXC_UNPAIRED = basesExcludedByPairing / totalWithExcludes;
-                metrics.PCT_EXC_BASEQ = basesExcludedByBaseq.get() / totalWithExcludes;
-                metrics.PCT_EXC_OVERLAP = basesExcludedByOverlap.get() / totalWithExcludes;
-                metrics.PCT_EXC_CAPPED = basesExcludedByCapping.get() / totalWithExcludes;
+                metrics.PCT_EXC_BASEQ = basesExcludedByBaseq.longValue() / totalWithExcludes;
+                metrics.PCT_EXC_OVERLAP = basesExcludedByOverlap.longValue() / totalWithExcludes;
+                metrics.PCT_EXC_CAPPED = basesExcludedByCapping.longValue() / totalWithExcludes;
                 metrics.PCT_EXC_TOTAL = (totalWithExcludes - total) / totalWithExcludes;
 
                 metrics.PCT_1X = MathUtil.sum(depthHistogramArray, 1, depthHistogramArray.length) / (double) metrics.GENOME_TERRITORY;
