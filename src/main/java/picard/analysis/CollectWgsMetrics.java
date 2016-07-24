@@ -52,9 +52,7 @@ import picard.filter.CountingPairedFilter;
 import picard.util.MathUtil;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
@@ -206,40 +204,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
     }
 
-    class InfoAndReference {
-        private SamLocusIterator.LocusInfo info;
-        private ReferenceSequence referenceSequence;
-
-        public InfoAndReference(SamLocusIterator.LocusInfo info, ReferenceSequence referenceSequence) {
-            this.info = info;
-            this.referenceSequence = referenceSequence;
-        }
-
-        public SamLocusIterator.LocusInfo getInfo() {
-            return info;
-        }
-
-        public void setInfo(SamLocusIterator.LocusInfo info) {
-            this.info = info;
-        }
-
-        public ReferenceSequence getReferenceSequence() {
-            return referenceSequence;
-        }
-
-        public void setReferenceSequence(ReferenceSequence referenceSequence) {
-            this.referenceSequence = referenceSequence;
-        }
-    }
-
-    protected void collect(List<InfoAndReference> infoAndReferences, WgsMetricsCollector collector, ProgressLogger progressLogger) {
+    protected void collect(List<SamLocusIterator.LocusInfo> locusInfos, WgsMetricsCollector collector, ProgressLogger progressLogger) {
         SamLocusIterator.LocusInfo currInfo;
-        ReferenceSequence currRef;
-        for (InfoAndReference infoAndReference : infoAndReferences) {
-            currInfo = infoAndReference.getInfo();
-            currRef = infoAndReference.getReferenceSequence();
-            collector.addInfo(currInfo, currRef);
-            progressLogger.record(currInfo.getSequenceName(), currInfo.getPosition());
+        for (SamLocusIterator.LocusInfo locusInfo : locusInfos) {
+            currInfo = locusInfo;
+            collector.addInfo(locusInfo);
+            progressLogger.record(locusInfo.getSequenceName(), currInfo.getPosition());
         }
     }
     @Override
@@ -290,13 +260,13 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         final int MAX_THREADS = 2;
-        final int LOCI_PER_TASK = 25;
+        final int LOCI_PER_TASK = 100;
         final int QUEUE_CAPACITY = 10;
         final int MAX_ACQUIRES = 3;
         // Loop through all the loci
         ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
         final Semaphore sem = new Semaphore(MAX_ACQUIRES);
-        List<InfoAndReference> packageInfo = new ArrayList<>(LOCI_PER_TASK);
+        List<SamLocusIterator.LocusInfo> packageInfo = new ArrayList<>(LOCI_PER_TASK);
         while (iterator.hasNext()) {
 
             final SamLocusIterator.LocusInfo info = iterator.next();
@@ -305,13 +275,13 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
 
-            packageInfo.add(new InfoAndReference(info, ref));
+            packageInfo.add(info);
 
             if (packageInfo.size() < LOCI_PER_TASK) {
                 continue;
             }
 
-            final List<InfoAndReference> tmpPackageInfo = packageInfo;
+            final List<SamLocusIterator.LocusInfo> tmpPackageInfo = packageInfo;
             packageInfo = new ArrayList<>(LOCI_PER_TASK);
 
             try {
@@ -339,7 +309,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
-        System.out.println("TIIIIIIIIIIIIIIIIME! " + (System.nanoTime() - start));
+        //System.out.println("TIIIIIIIIIIIIIIIIME! " + (System.nanoTime() - start));
         return 0;
     }
 
@@ -366,7 +336,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     protected WgsMetricsCollector getCollector(final int coverageCap) {
         return new WgsMetricsCollector(coverageCap);
     }
-
+    //docs: HPROF. Запустить метрику с использованием HPROF, посмотреть, что будет
     protected class WgsMetricsCollector {
 
         protected final AtomicLongArray atomicDepthHistogramArray;
@@ -383,7 +353,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             atomicBaseQHistogramArray = new AtomicLongArray(Byte.MAX_VALUE);
             this.coverageCap = coverageCap;
         }
-        public void addInfo(final SamLocusIterator.LocusInfo info, final ReferenceSequence ref) {
+        public void addInfo(final SamLocusIterator.LocusInfo info) {
 
             // Figure out the coverage while not counting overlapping reads twice, and excluding various things
 
@@ -527,4 +497,3 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         }
     }
 }
-
