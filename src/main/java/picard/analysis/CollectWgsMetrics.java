@@ -259,10 +259,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
 
-        final int MAX_THREADS = 2;
         final int LOCI_PER_TASK = 25;
-        final int QUEUE_CAPACITY = 10;
-        final int MAX_ACQUIRES = 5;
 
         // Loop through all the loci
         List<SamLocusIterator.LocusInfo> packageInfo = new ArrayList<>(LOCI_PER_TASK);
@@ -283,12 +280,13 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             final List<SamLocusIterator.LocusInfo> tmpPackageInfo = packageInfo;
             packageInfo = new ArrayList<>(LOCI_PER_TASK);
 
-            tmpPackageInfo.parallelStream().forEach(locusInfo -> collect(locusInfo, collector, progress));
+            tmpPackageInfo.stream().forEach(locusInfo -> collect(locusInfo, collector, progress));
 
             if (usingStopAfter && ++counter > stopAfter) break;
         }
 
         collect(packageInfo, collector, progress);
+
 
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
