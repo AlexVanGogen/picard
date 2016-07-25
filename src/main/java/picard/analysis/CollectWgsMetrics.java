@@ -32,14 +32,7 @@ import htsjdk.samtools.metrics.MetricBase;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.reference.ReferenceSequence;
 import htsjdk.samtools.reference.ReferenceSequenceFileWalker;
-import htsjdk.samtools.util.Histogram;
-import htsjdk.samtools.util.IOUtil;
-import htsjdk.samtools.util.IntervalList;
-import htsjdk.samtools.util.Log;
-import htsjdk.samtools.util.ProgressLogger;
-import htsjdk.samtools.util.QualityUtil;
-import htsjdk.samtools.util.SamLocusIterator;
-import htsjdk.samtools.util.SequenceUtil;
+import htsjdk.samtools.util.*;
 import picard.cmdline.CommandLineProgram;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.Option;
@@ -55,6 +48,7 @@ import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.stream.Stream;
 
 /**
  * Computes a number of metrics that are useful for evaluating coverage and performance of whole genome sequencing experiments.
@@ -204,7 +198,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
     }
 
-    protected void collect(List<SamLocusIterator.LocusInfo> locusInfos, WgsMetricsCollector collector, ProgressLogger progressLogger) {
+    protected void collect(final List<SamLocusIterator.LocusInfo> locusInfos, final WgsMetricsCollector collector, final ProgressLogger progressLogger) {
         SamLocusIterator.LocusInfo currInfo;
         for (SamLocusIterator.LocusInfo locusInfo : locusInfos) {
             currInfo = locusInfo;
@@ -212,6 +206,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             progressLogger.record(locusInfo.getSequenceName(), currInfo.getPosition());
         }
     }
+
+    protected void collect(final SamLocusIterator.LocusInfo locusInfo, final WgsMetricsCollector collector, final ProgressLogger progressLogger) {
+        collector.addInfo(locusInfo);
+        progressLogger.record(locusInfo.getSequenceName(), locusInfo.getPosition());
+    }
+
     @Override
     protected int doWork() {
         long start = System.nanoTime();
@@ -260,12 +260,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         final int MAX_THREADS = 2;
-        final int LOCI_PER_TASK = 100;
+        final int LOCI_PER_TASK = 25;
         final int QUEUE_CAPACITY = 10;
-        final int MAX_ACQUIRES = 3;
+        final int MAX_ACQUIRES = 5;
+
         // Loop through all the loci
-        ExecutorService es = Executors.newFixedThreadPool(MAX_THREADS);
-        final Semaphore sem = new Semaphore(MAX_ACQUIRES);
         List<SamLocusIterator.LocusInfo> packageInfo = new ArrayList<>(LOCI_PER_TASK);
         while (iterator.hasNext()) {
 
@@ -284,32 +283,16 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             final List<SamLocusIterator.LocusInfo> tmpPackageInfo = packageInfo;
             packageInfo = new ArrayList<>(LOCI_PER_TASK);
 
-            try {
-                sem.acquire();
-                es.submit(() -> {
-                    collect(tmpPackageInfo, collector, progress);
-                    sem.release();
-                });
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            tmpPackageInfo.parallelStream().forEach(locusInfo -> collect(locusInfo, collector, progress));
 
             if (usingStopAfter && ++counter > stopAfter) break;
         }
 
         collect(packageInfo, collector, progress);
 
-        es.shutdown();
-        try {
-            es.awaitTermination(1, TimeUnit.DAYS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
-        //System.out.println("TIIIIIIIIIIIIIIIIME! " + (System.nanoTime() - start));
         return 0;
     }
 
